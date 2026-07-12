@@ -78,25 +78,29 @@
 <div class="container">
     <h2>Medication Safety Portal</h2>
     
+    <!-- Current Medications Section -->
     <div class="med-list">
         <strong>Medications:</strong>
         <div id="current-meds-container" style="margin-top: 8px;"></div>
     </div>
 
+    <!-- Search Input -->
     <div class="input-group">
         <input type="text" id="med-input" placeholder="Enter medication name (e.g., Tylenol, Humira, Ibuprofen)...">
     </div>
     
+    <!-- Action Buttons -->
     <div>
         <button class="btn-blue" onclick="checkSideEffects()">Show Known Side Effects</button>
         <button class="btn-orange" onclick="checkInteractions()">Check Interactions</button>
     </div>
 
+    <!-- Output Console -->
     <div id="results" class="results-box"></div>
 </div>
 
 <script>
-    // Hardcoded profile list based on your current medications
+    // Hardcoded profile list with spellings fixed: "nortriptyline" and "melatonin"
     const currentMedications = [
         "remicade", "gabapentin", "nortriptyline", "magnesium", 
         "omega 3 fish oil", "folic acid", "methotrexate", "melatonin"
@@ -116,14 +120,17 @@
             const response = await fetch(`https://rxnav.nlm.nih.gov/REST/approximateTerm.json?term=${encodeURIComponent(inputName)}&maxEntries=1`);
             const data = await response.json();
             
-            // Extract the closest standard mapping name found by NIH
             if (data.approximateGroup && data.approximateGroup.candidate && data.approximateGroup.candidate.length > 0) {
-                return data.approximateGroup.candidate[0].name;
+                const candidateName = data.approximateGroup.candidate[0].name;
+                // Double-check against unexpected falsy or empty strings
+                if (candidateName && candidateName !== "undefined" && candidateName !== "null") {
+                    return candidateName;
+                }
             }
-            return inputName; // Fallback to raw string if NIH can't approximate it
+            return null; // Return null if standard mapping is missing or broken
         } catch (error) {
-            console.error("NIH API error, falling back to raw input", error);
-            return inputName;
+            console.error("NIH API error", error);
+            return null; 
         }
     }
 
@@ -135,14 +142,19 @@
         showLoading();
         const cleanName = await getNormalizedDrugName(rawInput);
         
+        // Strict Check: If normalized name is missing or returned unknown, halt execution
+        if (!cleanName) {
+            displayResults(`Could not resolve a verified medication name for "${rawInput}". Registry lookup returned an unknown result, search halted.`);
+            return;
+        }
+        
         try {
-            // Query OpenFDA for Adverse Events matching the resolved name
             const url = `https://api.fda.gov/drug/event.json?search=patient.drug.medicinalproduct:${encodeURIComponent(cleanName)}&count=patient.reaction.reactionmeddrapt.exact&limit=15`;
             const response = await fetch(url);
             const data = await response.json();
             
             if (data.error) {
-                displayResults(`No specific side effect records found for "${cleanName}". Check spelling or try a broader term.`);
+                displayResults(`No specific side effect records found for verified drug: "${cleanName}".`);
                 return;
             }
 
@@ -166,8 +178,13 @@
         showLoading();
         const cleanName = await getNormalizedDrugName(rawInput);
         
+        // Strict Check: Stop if name cannot be safely mapped by NIH 
+        if (!cleanName) {
+            displayResults(`Could not resolve a verified medication name for "${rawInput}". Interaction analysis requires a known registry term.`);
+            return;
+        }
+        
         try {
-            // Query OpenFDA Drug Label endpoint for full clinical drug interaction documentation
             const url = `https://api.fda.gov/drug/label.json?search=drug_interactions:${encodeURIComponent(cleanName)}&limit=1`;
             const response = await fetch(url);
             const data = await response.json();
@@ -180,7 +197,6 @@
             const interactionText = data.results[0].drug_interactions[0];
             let htmlOutput = `<h3>Official FDA Interaction Labeling for: ${cleanName}</h3>`;
             
-            // Scrape the text block to highlight matches against your active list
             let matchedMeds = [];
             currentMedications.forEach(med => {
                 const regex = new RegExp(`\\b${med}\\b`, 'gi');
