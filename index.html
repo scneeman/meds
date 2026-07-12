@@ -113,26 +113,34 @@
 
     const resultsDiv = document.getElementById('results');
 
-    // Helper 1: Use NIH RxNorm API to clean fuzzy user input and get a standard drug name
-    async function getNormalizedDrugName(inputName) {
-        if (!inputName.trim()) return null;
-        try {
-            const response = await fetch(`https://rxnav.nlm.nih.gov/REST/approximateTerm.json?term=${encodeURIComponent(inputName)}&maxEntries=1`);
-            const data = await response.json();
+// Helper 1: Use NIH RxNorm API to clean fuzzy user input and extract a base ingredient name
+async function getNormalizedDrugName(inputName) {
+    if (!inputName.trim()) return null;
+    try {
+        const response = await fetch(`https://rxnav.nlm.nih.gov/REST/approximateTerm.json?term=${encodeURIComponent(inputName)}&maxEntries=1`);
+        const data = await response.json();
+        
+        if (data.approximateGroup && data.approximateGroup.candidate && data.approximateGroup.candidate.length > 0) {
+            let candidateName = data.approximateGroup.candidate[0].name;
             
-            if (data.approximateGroup && data.approximateGroup.candidate && data.approximateGroup.candidate.length > 0) {
-                const candidateName = data.approximateGroup.candidate[0].name;
-                // Double-check against unexpected falsy or empty strings
-                if (candidateName && candidateName !== "undefined" && candidateName !== "null") {
-                    return candidateName;
-                }
+            if (candidateName && candidateName !== "undefined" && candidateName !== "null") {
+                // NEW: Clean up the name. Strip numbers, strengths (mg/ml), or trailing descriptive text
+                // Examples: "scopolamine 1.5 MG 3 Day Transdermal" -> "scopolamine"
+                let baseName = candidateName
+                    .replace(/\d+(\.\d+)?\s*(mg|mcg|g|ml|hr|%|day)\b.*/gi, '') // Strips dosages & everything after
+                    .replace(/[\d\-]/g, '') // Strips lingering stray numbers or hyphens
+                    .trim();
+
+                // If cleaning leaves us empty, fallback to the original candidate name
+                return baseName || candidateName;
             }
-            return null; // Return null if standard mapping is missing or broken
-        } catch (error) {
-            console.error("NIH API error", error);
-            return null; 
         }
+        return null; 
+    } catch (error) {
+        console.error("NIH API error", error);
+        return null; 
     }
+}
 
     // BUTTON 1: Fetch Adverse Events (Side Effects) from OpenFDA
     async function checkSideEffects() {
