@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medication Safety Checker</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background-color: #f7f9fa;
+            color: #333;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 12px 20px;
+            font-size: 15px;
+            font-weight: 600;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-blue { background-color: #007bff; color: white; }
+        .btn-blue:hover { background-color: #0056b3; }
+        .btn-orange { background-color: #fd7e14; color: white; }
+        .btn-orange:hover { background-color: #d9660c; }
+        
+        .med-list {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 25px;
+        }
+        .med-badge {
+            display: inline-block;
+            background: white;
+            padding: 5px 10px;
+            border-radius: 20px;
+            margin: 4px;
+            font-size: 14px;
+            border: 1px solid #cbd5e1;
+        }
+        .results-box {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 6px;
+            background: #fff;
+            border-left: 5px solid #6c757d;
+            display: none;
+            white-space: pre-line;
+            line-height: 1.6;
+        }
+        .loading { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Medication Safety Portal</h2>
+    
+    <div class="med-list">
+        <strong>My Current Medications:</strong>
+        <div id="current-meds-container" style="margin-top: 8px;"></div>
+    </div>
+
+    <div class="input-group">
+        <input type="text" id="med-input" placeholder="Enter medication name (e.g., Tylenol, Humira, Ibuprofen)...">
+    </div>
+    
+    <div>
+        <button class="btn-blue" onclick="checkSideEffects()">Show Known Side Effects</button>
+        <button class="btn-orange" onclick="checkInteractions()">Check Interactions</button>
+    </div>
+
+    <div id="results" class="results-box"></div>
+</div>
+
+<script>
+    // Hardcoded profile list based on your current medications
+    const currentMedications = [
+        "remicade", "gabapentin", "notryptaline", "magnesium", 
+        "omega 3 fish oil", "folic acid", "methotrexate", "melatonin"
+    ];
+
+    // Render badges onto UI on load
+    document.getElementById('current-meds-container').innerHTML = currentMedications
+        .map(med => `<span class="med-badge">${med.charAt(0).toUpperCase() + med.slice(1)}</span>`)
+        .join('');
+
+    const resultsDiv = document.getElementById('results');
+
+    // Helper 1: Use NIH RxNorm API to clean fuzzy user input and get a standard drug name
+    async function getNormalizedDrugName(inputName) {
+        if (!inputName.trim()) return null;
+        try {
+            const response = await fetch(`https://rxnav.nlm.nih.gov/REST/approximateTerm.json?term=${encodeURIComponent(inputName)}&maxEntries=1`);
+            const data = await response.json();
+            
+            // Extract the closest standard mapping name found by NIH
+            if (data.approximateGroup && data.approximateGroup.candidate && data.approximateGroup.candidate.length > 0) {
+                return data.approximateGroup.candidate[0].name;
+            }
+            return inputName; // Fallback to raw string if NIH can't approximate it
+        } catch (error) {
+            console.error("NIH API error, falling back to raw input", error);
+            return inputName;
+        }
+    }
+
+    // BUTTON 1: Fetch Adverse Events (Side Effects) from OpenFDA
+    async function checkSideEffects() {
+        const rawInput = document.getElementById('med-input').value;
+        if (!rawInput) return alert("Please enter a medication name first.");
+        
+        showLoading();
+        const cleanName = await getNormalizedDrugName(rawInput);
+        
+        try {
+            // Query OpenFDA for Adverse Events matching the resolved name
+            const url = `https://api.fda.gov/drug/event.json?search=patient.drug.medicinalproduct:${encodeURIComponent(cleanName)}&count=patient.reaction.reactionmeddrapt.exact&limit=15`;
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data.error) {
+                displayResults(`No specific side effect records found for "${cleanName}". Check spelling or try a broader term.`);
+                return;
+            }
+
+            let htmlOutput = `<h3>Top Reported Side Effects for: ${cleanName}</h3><ul>`;
+            data.results.forEach(item => {
+                htmlOutput += `<li><strong>${item.term.toLowerCase()}</strong> (Reported in ${item.count} clinical cases)</li>`;
+            });
+            htmlOutput += `</ul>`;
+            displayResults(htmlOutput);
+
+        } catch (err) {
+            displayResults("Error retrieving side effects data. Please try again.");
+        }
+    }
+
+    // BUTTON 2: Cross-reference Drug interaction labeling text in OpenFDA
+    async function checkInteractions() {
+        const rawInput = document.getElementById('med-input').value;
+        if (!rawInput) return alert("Please enter a medication name first.");
+        
+        showLoading();
+        const cleanName = await getNormalizedDrugName(rawInput);
+        
+        try {
+            // Query OpenFDA Drug Label endpoint for full clinical drug interaction documentation
+            const url = `https://api.fda.gov/drug/label.json?search=drug_interactions:${encodeURIComponent(cleanName)}&limit=1`;
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data.error || !data.results || data.results.length === 0 || !data.results[0].drug_interactions) {
+                displayResults(`No drug interaction labeling text found on file for "${cleanName}".`);
+                return;
+            }
+
+            const interactionText = data.results[0].drug_interactions[0];
+            let htmlOutput = `<h3>Official FDA Interaction Labeling for: ${cleanName}</h3>`;
+            
+            // Scrape the text block to highlight matches against your active list
+            let matchedMeds = [];
+            currentMedications.forEach(med => {
+                const regex = new RegExp(`\\b${med}\\b`, 'gi');
+                if (regex.test(interactionText)) {
+                    matchedMeds.push(med.toUpperCase());
+                }
+            });
+
+            if (matchedMeds.length > 0) {
+                htmlOutput += `<div style="background: #fff3cd; border: 1px solid #ffeeba; padding: 15px; margin-bottom: 15px; border-radius: 4px; color: #856404;">`;
+                htmlOutput += `<strong>⚠️ ATTENTION:</strong> Mention of current medication(s) <strong>${matchedMeds.join(', ')}</strong> detected in the FDA safety documents below.`;
+                htmlOutput += `</div>`;
+            } else {
+                htmlOutput += `<div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; margin-bottom: 15px; border-radius: 4px; color: #155724;">`;
+                htmlOutput += `✓ No obvious textual matches found against your current medication list words. Always cross-check details text explicitly below.`;
+                htmlOutput += `</div>`;
+            }
+
+            htmlOutput += `<p style="font-size: 14px; color: #444; max-height: 400px; overflow-y: scroll; border: 1px solid #ddd; padding: 10px; background: #fafafa;">${interactionText}</p>`;
+            displayResults(htmlOutput);
+
+        } catch (err) {
+            displayResults("Error retrieving interaction documentation.");
+        }
+    }
+
+    function showLoading() {
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<span class="loading">Searching medical registries...</span>';
+    }
+
+    function displayResults(content) {
+        resultsDiv.innerHTML = content;
+    }
+</script>
+
+</body>
+</html>
